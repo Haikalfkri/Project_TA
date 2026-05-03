@@ -190,8 +190,8 @@ def load_and_process_data():
 def load_models():
     """Load saved GRU and LSTM models."""
     model_dir = os.path.join(os.path.dirname(__file__), 'Model')
-    gru_path = os.path.join(model_dir, 'gru_bitcoin_96%.keras')
-    lstm_path = os.path.join(model_dir, 'lstm_bitcoin_88%.keras')
+    gru_path = os.path.join(model_dir, 'gru_model.keras')
+    lstm_path = os.path.join(model_dir, 'lstm_model.keras')
 
     gru_model = tf.keras.models.load_model(gru_path)
     lstm_model = tf.keras.models.load_model(lstm_path)
@@ -200,7 +200,7 @@ def load_models():
 
 def prepare_data_for_prediction(df):
     """Prepare sequences and scalers matching notebook pipeline."""
-    FEATURES = ['Close', 'Volume', 'RSI', 'MACD', 'MACD_Signal', 'MACD_Hist', 'Day_of_Week', 'Month']
+    FEATURES = ['Close', 'Volume', 'MA7', 'MA21', 'MA50', 'RSI', 'MACD', 'MACD_Signal', 'MACD_Hist', 'Day_of_Week', 'Month']
     TARGET = 'Close'
     LOOKBACK = 30
     TRAIN_RATIO = 0.70
@@ -390,6 +390,104 @@ def metric_card_html(label, value, style_class="metric-value"):
     """
 
 
+def forecast_next_30_days(model, data_dict, df):
+    """Forecast next 30 days using iterative rolling window."""
+    LOOKBACK = 30
+    FEATURES = ['Close', 'Volume', 'MA7', 'MA21', 'MA50', 'RSI', 'MACD', 'MACD_Signal', 'MACD_Hist', 'Day_of_Week', 'Month']
+    scaler_X = data_dict['scaler_y']  # reuse scaler_y for inverse
+
+    # Build full scaler_X from the same pipeline logic
+    from sklearn.preprocessing import MinMaxScaler
+    data_feat = df[FEATURES].values
+    n_total_raw = len(data_feat)
+    TRAIN_RATIO = 0.70
+    n_train_raw = int((n_total_raw - LOOKBACK) * TRAIN_RATIO) + LOOKBACK
+    sc_X = MinMaxScaler(feature_range=(0, 1))
+    sc_X.fit(data_feat[:n_train_raw])
+    scaled_full = sc_X.transform(data_feat)
+
+    sc_y = data_dict['scaler_y']
+
+    # Start window: last LOOKBACK rows of scaled data
+    window = scaled_full[-LOOKBACK:].copy()  # shape (30, n_features)
+
+    last_date = pd.to_datetime(df['Date'].values[-1])
+    future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=30, freq='D')
+
+    predictions = []
+    for _ in range(30):
+        X_input = window[np.newaxis, :, :]  # (1, 30, n_features)
+        pred_scaled = model.predict(X_input, verbose=0)[0, 0]
+        pred_price = sc_y.inverse_transform([[pred_scaled]])[0, 0]
+        predictions.append(pred_price)
+
+        # Roll window: shift left and append new row
+        # For simplicity, keep non-Close features same as last row, update Close feature (index 0)
+        new_row = window[-1].copy()
+        new_row[0] = pred_scaled  # update Close feature
+        window = np.vstack([window[1:], new_row])
+
+    return future_dates, np.array(predictions)
+
+
+def create_forecast_chart(future_dates, forecast_prices, last_actual_dates, last_actual_prices, model_name, color_pred):
+    """Create 30-day future forecast chart with last 30 actual prices as context."""
+    fig = go.Figure()
+
+    # Last actual prices (context)
+    fig.add_trace(go.Scatter(
+        x=pd.to_datetime(last_actual_dates),
+        y=last_actual_prices,
+        mode='lines',
+        name='Harga Aktual (Terakhir)',
+        line=dict(color='#ccd6f6', width=2),
+        hovertemplate='%{x|%d %b %Y}<br>Aktual: $%{y:,.2f}<extra></extra>'
+    ))
+
+    # Connecting line from last actual to first forecast
+    connect_x = [pd.to_datetime(last_actual_dates[-1]), future_dates[0]]
+    connect_y = [last_actual_prices[-1], forecast_prices[0]]
+    fig.add_trace(go.Scatter(
+        x=connect_x, y=connect_y,
+        mode='lines', showlegend=False,
+        line=dict(color=color_pred, width=2, dash='dot')
+    ))
+
+    # Forecast
+    fig.add_trace(go.Scatter(
+        x=future_dates,
+        y=forecast_prices,
+        mode='lines+markers',
+        name=f'Prediksi 30 Hari ({model_name})',
+        line=dict(color=color_pred, width=2.5),
+        marker=dict(size=5, color=color_pred),
+        fill='tonexty',
+        fillcolor=f'rgba({int(color_pred[1:3], 16)},{int(color_pred[3:5], 16)},{int(color_pred[5:7], 16)},0.08)',
+        hovertemplate='%{x|%d %b %Y}<br>Prediksi: $%{y:,.2f}<extra></extra>'
+    ))
+
+    # Vertical separator
+    fig.add_vline(
+        x=pd.to_datetime(last_actual_dates[-1]).timestamp() * 1000,
+        line=dict(color='rgba(255,255,255,0.25)', width=1, dash='dash')
+    )
+    fig.add_annotation(
+        x=future_dates[15], y=max(forecast_prices),
+        text="⬅ Aktual  |  Prediksi ➡",
+        showarrow=False,
+        font=dict(size=12, color='#8892b0'),
+        bgcolor='rgba(0,0,0,0.4)', borderpad=6
+    )
+
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=dict(text=f'🔭 Prediksi Harga Bitcoin 30 Hari ke Depan — {model_name}', font=dict(size=16, color='#f5f5f5')),
+        yaxis_title='Harga (USD)', height=420,
+        yaxis_tickformat='$,.0f'
+    )
+    return fig
+
+
 # ============================================================
 # MAIN APP
 # ============================================================
@@ -420,84 +518,120 @@ def main():
 
     st.markdown("---")
 
-    # ── ROW 2: Prediction Charts (GRU left, LSTM right) ──
+    # ── ROW 2: Prediction Charts (GRU then LSTM, full width) ──
     st.markdown('<div class="section-title">🔮 Hasil Prediksi vs Harga Aktual Bitcoin</div>', unsafe_allow_html=True)
-    col_gru, col_lstm = st.columns(2)
-
-    with col_gru:
-        st.plotly_chart(
-            create_prediction_chart(
-                data_dict['dates_test'],
-                gru_preds['y_true_test'], gru_preds['y_pred_test'],
-                'GRU', '#3498db', '#e74c3c'
-            ), use_container_width=True
-        )
-
-    with col_lstm:
-        st.plotly_chart(
-            create_prediction_chart(
-                data_dict['dates_test'],
-                lstm_preds['y_true_test'], lstm_preds['y_pred_test'],
-                'LSTM', '#9b59b6', '#1abc9c'
-            ), use_container_width=True
-        )
+    st.plotly_chart(
+        create_prediction_chart(
+            data_dict['dates_test'],
+            gru_preds['y_true_test'], gru_preds['y_pred_test'],
+            'GRU', '#3498db', '#f7931a'
+        ), use_container_width=True
+    )
+    st.plotly_chart(
+        create_prediction_chart(
+            data_dict['dates_test'],
+            lstm_preds['y_true_test'], lstm_preds['y_pred_test'],
+            'LSTM', '#9b59b6', '#a855f7'
+        ), use_container_width=True
+    )
 
     st.markdown("---")
 
-    # ── ROW 3: Test Set Detail Analysis ──
+    # ── ROW 3: Test Set Detail Analysis (GRU then LSTM, full width) ──
     st.markdown('<div class="section-title">🔍 Analisis Detail Hasil Test Set</div>', unsafe_allow_html=True)
-    col_d1, col_d2 = st.columns(2)
+    st.plotly_chart(
+        create_test_detail_charts(
+            data_dict['dates_test'],
+            gru_preds['y_true_test'], gru_preds['y_pred_test'],
+            'GRU', ['#f7931a', '#e74c3c']
+        ), use_container_width=True
+    )
+    st.plotly_chart(
+        create_test_detail_charts(
+            data_dict['dates_test'],
+            lstm_preds['y_true_test'], lstm_preds['y_pred_test'],
+            'LSTM', ['#a855f7', '#1abc9c']
+        ), use_container_width=True
+    )
 
-    with col_d1:
-        st.plotly_chart(
-            create_test_detail_charts(
-                data_dict['dates_test'],
-                gru_preds['y_true_test'], gru_preds['y_pred_test'],
-                'GRU', ['#3498db', '#e74c3c']
-            ), use_container_width=True
-        )
+    st.markdown("---")
 
-    with col_d2:
-        st.plotly_chart(
-            create_test_detail_charts(
-                data_dict['dates_test'],
-                lstm_preds['y_true_test'], lstm_preds['y_pred_test'],
-                'LSTM', ['#9b59b6', '#1abc9c']
-            ), use_container_width=True
-        )
+    # ── ROW 3b: 30-Day Future Forecast ──
+    st.markdown('<div class="section-title">🔭 Prediksi Harga Bitcoin 30 Hari ke Depan</div>', unsafe_allow_html=True)
+
+    with st.spinner('⏳ Menghitung prediksi 30 hari ke depan...'):
+        gru_future_dates, gru_forecast = forecast_next_30_days(gru_model, data_dict, df)
+        lstm_future_dates, lstm_forecast = forecast_next_30_days(lstm_model, data_dict, df)
+
+    # Context: last 60 actual prices
+    last_actual_dates = data_dict['dates_test'][-60:]
+    last_actual_prices = gru_preds['y_true_test'][-60:]
+
+    st.plotly_chart(
+        create_forecast_chart(gru_future_dates, gru_forecast, last_actual_dates, last_actual_prices, 'GRU', '#f7931a'),
+        use_container_width=True
+    )
+    st.plotly_chart(
+        create_forecast_chart(lstm_future_dates, lstm_forecast, last_actual_dates, last_actual_prices, 'LSTM', '#a855f7'),
+        use_container_width=True
+    )
 
     st.markdown("---")
 
     # ── ROW 4: Evaluation Metrics (Test Only) ──
     st.markdown('<div class="section-title">📋 Perbandingan Metrik Evaluasi (Test Set)</div>', unsafe_allow_html=True)
 
-    col_m1, col_m2 = st.columns(2)
+    # --- RMSE & MAE: Grouped Bar Chart (full width) ---
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(
+        name='GRU',
+        x=['RMSE (USD)', 'MAE (USD)'],
+        y=[gru_metrics_test['RMSE'], gru_metrics_test['MAE']],
+        marker=dict(
+            color=['#f7931a', '#ffb347'],
+            line=dict(color='rgba(255,255,255,0.15)', width=1)
+        ),
+        text=[f"${gru_metrics_test['RMSE']:,.2f}", f"${gru_metrics_test['MAE']:,.2f}"],
+        textposition='outside',
+        textfont=dict(color='#f7931a', size=14, family='Inter'),
+        hovertemplate='<b>GRU</b><br>%{x}: $%{y:,.2f}<extra></extra>'
+    ))
+    fig_bar.add_trace(go.Bar(
+        name='LSTM',
+        x=['RMSE (USD)', 'MAE (USD)'],
+        y=[lstm_metrics_test['RMSE'], lstm_metrics_test['MAE']],
+        marker=dict(
+            color=['#a855f7', '#c084fc'],
+            line=dict(color='rgba(255,255,255,0.15)', width=1)
+        ),
+        text=[f"${lstm_metrics_test['RMSE']:,.2f}", f"${lstm_metrics_test['MAE']:,.2f}"],
+        textposition='outside',
+        textfont=dict(color='#a855f7', size=14, family='Inter'),
+        hovertemplate='<b>LSTM</b><br>%{x}: $%{y:,.2f}<extra></extra>'
+    ))
+    fig_bar.update_layout(
+        **CHART_LAYOUT,
+        title=dict(text='📊 Perbandingan RMSE & MAE — GRU vs LSTM', font=dict(size=16, color='#f5f5f5')),
+        barmode='group',
+        bargap=0.25,
+        bargroupgap=0.1,
+        yaxis_title='Nilai Error (USD)',
+        yaxis_tickformat='$,.0f',
+        height=420,
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
 
-    with col_m1:
-        st.markdown("#### 🟠 Model GRU")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(metric_card_html("RMSE (USD)", f"${gru_metrics_test['RMSE']:,.2f}", "metric-value metric-value-gru"), unsafe_allow_html=True)
-        with c2:
-            st.markdown(metric_card_html("MAE (USD)", f"${gru_metrics_test['MAE']:,.2f}", "metric-value metric-value-gru"), unsafe_allow_html=True)
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown(metric_card_html("MAPE (%)", f"{gru_metrics_test['MAPE']:.4f}%", "metric-value metric-value-gru"), unsafe_allow_html=True)
-        with c4:
-            st.markdown(metric_card_html("Akurasi (%)", f"{gru_metrics_test['Accuracy']:.4f}%", "metric-value metric-value-gru"), unsafe_allow_html=True)
-
-    with col_m2:
-        st.markdown("#### 🟣 Model LSTM")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(metric_card_html("RMSE (USD)", f"${lstm_metrics_test['RMSE']:,.2f}", "metric-value metric-value-lstm"), unsafe_allow_html=True)
-        with c2:
-            st.markdown(metric_card_html("MAE (USD)", f"${lstm_metrics_test['MAE']:,.2f}", "metric-value metric-value-lstm"), unsafe_allow_html=True)
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown(metric_card_html("MAPE (%)", f"{lstm_metrics_test['MAPE']:.4f}%", "metric-value metric-value-lstm"), unsafe_allow_html=True)
-        with c4:
-            st.markdown(metric_card_html("Akurasi (%)", f"{lstm_metrics_test['Accuracy']:.4f}%", "metric-value metric-value-lstm"), unsafe_allow_html=True)
+    # --- MAPE & Accuracy: Cards (full width, 4 cols) ---
+    st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(metric_card_html("🟠 GRU — MAPE (%)", f"{gru_metrics_test['MAPE']:.4f}%", "metric-value metric-value-gru"), unsafe_allow_html=True)
+    with c2:
+        st.markdown(metric_card_html("🟠 GRU — Akurasi (%)", f"{gru_metrics_test['Accuracy']:.4f}%", "metric-value metric-value-gru"), unsafe_allow_html=True)
+    with c3:
+        st.markdown(metric_card_html("🟣 LSTM — MAPE (%)", f"{lstm_metrics_test['MAPE']:.4f}%", "metric-value metric-value-lstm"), unsafe_allow_html=True)
+    with c4:
+        st.markdown(metric_card_html("🟣 LSTM — Akurasi (%)", f"{lstm_metrics_test['Accuracy']:.4f}%", "metric-value metric-value-lstm"), unsafe_allow_html=True)
 
     # Footer
     st.markdown("---")
