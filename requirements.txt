@@ -4,5 +4,5 @@ numpy
 plotly
 yfinance
 scikit-learn
-tensorflow==2.20.0
+tensorflow
 ta
