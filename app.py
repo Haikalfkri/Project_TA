@@ -1,5 +1,5 @@
 """
-Dashboard Perbandingan Model GRU vs LSTM - Prediksi Harga Bitcoin
+Dashboard Perbandingan Model GRU vs LSTM - Prediksi Harga Bitcoin (BTC-USD)
 """
 
 import streamlit as st
