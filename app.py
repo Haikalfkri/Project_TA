@@ -581,8 +581,15 @@ def main():
     # ── ROW 4: Evaluation Metrics (Test Only) ──
     st.markdown('<div class="section-title">📋 Perbandingan Metrik Evaluasi (Test Set)</div>', unsafe_allow_html=True)
 
-    # --- RMSE & MAE: Grouped Bar Chart (full width) ---
-    fig_bar = go.Figure()
+    # --- RMSE, MAE & MAPE: Grouped Bar Chart with dual y-axis (full width) ---
+    fig_bar = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.67, 0.33],
+        subplot_titles=['RMSE & MAE (USD)', 'MAPE (%)'],
+        horizontal_spacing=0.10
+    )
+
+    # RMSE & MAE — GRU (left chart)
     fig_bar.add_trace(go.Bar(
         name='GRU',
         x=['RMSE (USD)', 'MAE (USD)'],
@@ -593,9 +600,11 @@ def main():
         ),
         text=[f"${gru_metrics_test['RMSE']:,.2f}", f"${gru_metrics_test['MAE']:,.2f}"],
         textposition='outside',
-        textfont=dict(color='#f7931a', size=14, family='Inter'),
+        textfont=dict(color='#f7931a', size=13, family='Inter'),
         hovertemplate='<b>GRU</b><br>%{x}: $%{y:,.2f}<extra></extra>'
-    ))
+    ), row=1, col=1)
+
+    # RMSE & MAE — LSTM (left chart)
     fig_bar.add_trace(go.Bar(
         name='LSTM',
         x=['RMSE (USD)', 'MAE (USD)'],
@@ -606,31 +615,71 @@ def main():
         ),
         text=[f"${lstm_metrics_test['RMSE']:,.2f}", f"${lstm_metrics_test['MAE']:,.2f}"],
         textposition='outside',
-        textfont=dict(color='#a855f7', size=14, family='Inter'),
+        textfont=dict(color='#a855f7', size=13, family='Inter'),
         hovertemplate='<b>LSTM</b><br>%{x}: $%{y:,.2f}<extra></extra>'
-    ))
+    ), row=1, col=1)
+
+    # MAPE — GRU (right chart)
+    fig_bar.add_trace(go.Bar(
+        name='GRU',
+        x=['MAPE (%)'],
+        y=[gru_metrics_test['MAPE']],
+        marker=dict(
+            color='#f7931a',
+            line=dict(color='rgba(255,255,255,0.15)', width=1)
+        ),
+        text=[f"{gru_metrics_test['MAPE']:.4f}%"],
+        textposition='outside',
+        textfont=dict(color='#f7931a', size=13, family='Inter'),
+        showlegend=False,
+        hovertemplate='<b>GRU</b><br>MAPE: %{y:.4f}%<extra></extra>'
+    ), row=1, col=2)
+
+    # MAPE — LSTM (right chart)
+    fig_bar.add_trace(go.Bar(
+        name='LSTM',
+        x=['MAPE (%)'],
+        y=[lstm_metrics_test['MAPE']],
+        marker=dict(
+            color='#a855f7',
+            line=dict(color='rgba(255,255,255,0.15)', width=1)
+        ),
+        text=[f"{lstm_metrics_test['MAPE']:.4f}%"],
+        textposition='outside',
+        textfont=dict(color='#a855f7', size=13, family='Inter'),
+        showlegend=False,
+        hovertemplate='<b>LSTM</b><br>MAPE: %{y:.4f}%<extra></extra>'
+    ), row=1, col=2)
+
     fig_bar.update_layout(
         **CHART_LAYOUT,
-        title=dict(text='📊 Perbandingan RMSE & MAE — GRU vs LSTM', font=dict(size=16, color='#f5f5f5')),
+        title=dict(text='📊 Perbandingan RMSE, MAE & MAPE — GRU vs LSTM', font=dict(size=16, color='#f5f5f5')),
         barmode='group',
         bargap=0.25,
         bargroupgap=0.1,
-        yaxis_title='Nilai Error (USD)',
-        yaxis_tickformat='$,.0f',
-        height=420,
+        height=460,
     )
+    fig_bar.update_yaxes(
+        title_text='Nilai Error (USD)',
+        tickformat='$,.0f',
+        gridcolor='rgba(255,255,255,0.06)',
+        row=1, col=1
+    )
+    fig_bar.update_yaxes(
+        title_text='MAPE (%)',
+        ticksuffix='%',
+        gridcolor='rgba(255,255,255,0.06)',
+        row=1, col=2
+    )
+    fig_bar.update_xaxes(gridcolor='rgba(255,255,255,0.06)')
     st.plotly_chart(fig_bar, use_container_width=True)
 
-    # --- MAPE & Accuracy: Cards (full width, 4 cols) ---
+    # --- Accuracy: Cards (full width, 2 cols) ---
     st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2 = st.columns(2)
     with c1:
-        st.markdown(metric_card_html("🟠 GRU — MAPE (%)", f"{gru_metrics_test['MAPE']:.4f}%", "metric-value metric-value-gru"), unsafe_allow_html=True)
-    with c2:
         st.markdown(metric_card_html("🟠 GRU — Akurasi (%)", f"{gru_metrics_test['Accuracy']:.4f}%", "metric-value metric-value-gru"), unsafe_allow_html=True)
-    with c3:
-        st.markdown(metric_card_html("🟣 LSTM — MAPE (%)", f"{lstm_metrics_test['MAPE']:.4f}%", "metric-value metric-value-lstm"), unsafe_allow_html=True)
-    with c4:
+    with c2:
         st.markdown(metric_card_html("🟣 LSTM — Akurasi (%)", f"{lstm_metrics_test['Accuracy']:.4f}%", "metric-value metric-value-lstm"), unsafe_allow_html=True)
 
     # Footer
